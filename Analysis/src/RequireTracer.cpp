@@ -1,7 +1,9 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
+
 #include "Luau/RequireTracer.h"
 
 #include "Luau/Ast.h"
+
 #include "Luau/Module.h"
 
 namespace Luau
@@ -9,6 +11,12 @@ namespace Luau
 
 struct RequireTracer : AstVisitor
 {
+    struct RequireCall
+    {
+        AstExprCall* call;
+        bool typeOnly;
+    };
+
     RequireTracer(RequireTraceResult& result, FileResolver* fileResolver, const ModuleName& currentModuleName)
         : result(result)
         , fileResolver(fileResolver)
@@ -28,7 +36,12 @@ struct RequireTracer : AstVisitor
         AstExprGlobal* global = expr->func->as<AstExprGlobal>();
 
         if (global && global->name == "require" && expr->args.size >= 1)
-            requireCalls.push_back(expr);
+        {
+            requireCalls.push_back({
+                expr,
+                insideTypeof,
+            });
+        }
 
         return true;
     }
@@ -71,6 +84,17 @@ struct RequireTracer : AstVisitor
         return true;
     }
 
+    bool visit(AstTypeTypeof* node) override
+    {
+        bool previousInsideTypeof = insideTypeof;
+        insideTypeof = true;
+
+        node->expr->visit(this);
+
+        insideTypeof = previousInsideTypeof;
+        return false;
+    }
+
     AstNode* getDependent(AstNode* node)
     {
         if (AstExprLocal* expr = node->as<AstExprLocal>())
@@ -100,8 +124,8 @@ struct RequireTracer : AstVisitor
         // seed worklist with require arguments
         work.reserve(requireCalls.size());
 
-        for (AstExprCall* require : requireCalls)
-            work.push_back(require->args.data[0]);
+        for (const RequireCall& require : requireCalls)
+            work.push_back(require.call->args.data[0]);
 
         // push all dependent expressions to the work stack; note that the vector is modified during traversal
         for (size_t i = 0; i < work.size(); ++i)
@@ -145,21 +169,25 @@ struct RequireTracer : AstVisitor
 
         // resolve all requires according to their argument
         result.requireList.reserve(requireCalls.size());
+        result.typeRequireList.reserve(requireCalls.size());
 
-        for (AstExprCall* require : requireCalls)
+        for (const RequireCall& require : requireCalls)
         {
-            AstExpr* arg = require->args.data[0];
+            AstExpr* arg = require.call->args.data[0];
 
             if (const ModuleInfo* info = result.exprs.find(arg))
             {
-                result.requireList.push_back({info->name, require->location});
+                if (require.typeOnly)
+                    result.typeRequireList.push_back({info->name, require.call->location});
+                else
+                    result.requireList.push_back({info->name, require.call->location});
 
                 ModuleInfo infoCopy = *info; // copy *info out since next line invalidates info!
-                result.exprs[require] = std::move(infoCopy);
+                result.exprs[require.call] = std::move(infoCopy);
             }
             else
             {
-                result.exprs[require] = {}; // mark require as unresolved
+                result.exprs[require.call] = {}; // mark require as unresolved
             }
         }
     }
@@ -169,16 +197,21 @@ struct RequireTracer : AstVisitor
     ModuleName currentModuleName;
 
     DenseHashMap<AstLocal*, AstExpr*> locals;
+
     std::vector<AstNode*> work;
-    std::vector<AstExprCall*> requireCalls;
+    std::vector<RequireCall> requireCalls;
+
+    bool insideTypeof = false;
 };
 
 RequireTraceResult traceRequires(FileResolver* fileResolver, AstStatBlock* root, const ModuleName& currentModuleName, const TypeCheckLimits& limits)
 {
     RequireTraceResult result;
     RequireTracer tracer{result, fileResolver, currentModuleName};
+
     root->visit(&tracer);
     tracer.process(limits);
+
     return result;
 }
 

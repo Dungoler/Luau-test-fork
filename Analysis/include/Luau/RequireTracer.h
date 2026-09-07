@@ -18,7 +18,11 @@ struct RequireTraceResult
 {
     DenseHashMap<const AstNode*, ModuleInfo> exprs;
 
+    // Runtime module dependencies.
     std::vector<std::pair<ModuleName, Location>> requireList;
+
+    // Dependencies that only exist because of `typeof(...)`.
+    std::vector<std::pair<ModuleName, Location>> typeRequireList;
 };
 
 RequireTraceResult traceRequires(FileResolver* fileResolver, AstStatBlock* root, const ModuleName& currentModuleName, const TypeCheckLimits& limits);

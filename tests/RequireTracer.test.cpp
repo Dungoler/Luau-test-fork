@@ -260,4 +260,25 @@ TEST_CASE_FIXTURE(RequireTracerFixture, "follow_type_annotation_2")
     CHECK_EQ("game/Redirect/Nested", result.exprs[local->values.data[0]].name);
 }
 
+TEST_CASE_FIXTURE(RequireTracerFixture, "separate_type_only_requires")
+{
+    AstStatBlock* block = parse(R"(
+        local Runtime = require(workspace.Runtime)
+        type RuntimeType = typeof(Runtime)
+        type DirectType = typeof(require(workspace.Direct))
+        type NestedType = typeof((require(workspace.Nested)))
+        local LaterRuntime = require(workspace.LaterRuntime)
+    )");
+
+    RequireTraceResult result = traceRequires(&fileResolver, block, "ModuleName", {});
+
+    REQUIRE_EQ(2, result.requireList.size());
+    CHECK_EQ("workspace/Runtime", result.requireList[0].first);
+    CHECK_EQ("workspace/LaterRuntime", result.requireList[1].first);
+
+    REQUIRE_EQ(2, result.typeRequireList.size());
+    CHECK_EQ("workspace/Direct", result.typeRequireList[0].first);
+    CHECK_EQ("workspace/Nested", result.typeRequireList[1].first);
+}
+
 TEST_SUITE_END();

@@ -80,18 +80,22 @@ struct SourceNode
     ModuleName name;
     std::string humanReadableName;
     std::weak_ptr<ModuleSCC> scc;
-    DenseHashSet<ModuleName> requireSet;
 
+    // Runtime module dependencies.
+    DenseHashSet<ModuleName> requireSet;
     std::vector<std::pair<ModuleName, Location>> requireLocations;
     Set<ModuleName> dependents;
+
+    // Type-check-only module dependencies.
+    DenseHashSet<ModuleName> typeRequireSet;
+    std::vector<std::pair<ModuleName, Location>> typeRequireLocations;
+    DenseHashSet<ModuleName> typeDependents;
 
     bool dirtySourceModule = true;
     bool dirtyModule = true;
     bool dirtyModuleForAutocomplete = true;
-
     bool invalidModuleDependency = true;
     bool invalidModuleDependencyForAutocomplete = true;
-
     double autocompleteLimitsMult = 1.0;
 };
 

@@ -2163,6 +2163,121 @@ TEST_CASE_FIXTURE(FrontendFixture, "scc_detection_identifies_cycle")
     CHECK(sccA->members.size() == 2);
 }
 
+TEST_CASE_FIXTURE(FrontendFixture, "scc_type_only_cycle_is_not_runtime_require_cycle")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::LuauCyclicRequireTypeInference, true},
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauExportValueSyntax, true},
+        {FFlag::LuauExportValueTypecheck, true},
+    };
+
+    fileResolver.source["game/A"] = R"(
+        --!strict
+        type BModule = typeof(require(game.B))
+        return { a = 1 }
+    )";
+    fileResolver.source["game/B"] = R"(
+        --!strict
+        type AModule = typeof(require(game.A))
+        local value: AModule = { a = 2 }
+        return value
+    )";
+
+    CheckResult result = getFrontend().check("game/A");
+    LUAU_CHECK_NO_ERRORS(result);
+
+    auto snA = getFrontend().sourceNodes["game/A"];
+    auto snB = getFrontend().sourceNodes["game/B"];
+    REQUIRE(snA);
+    REQUIRE(snB);
+
+    CHECK(snA->requireSet.empty());
+    CHECK(snB->requireSet.empty());
+    CHECK(snA->typeRequireSet.contains("game/B"));
+    CHECK(snB->typeRequireSet.contains("game/A"));
+
+    ModuleSCCPtr sccA = snA->scc.lock();
+    ModuleSCCPtr sccB = snB->scc.lock();
+    REQUIRE(sccA);
+    CHECK(sccA == sccB);
+}
+
+TEST_CASE_FIXTURE(FrontendFixture, "scc_mixed_type_only_edge_is_not_runtime_require_cycle")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::LuauCyclicRequireTypeInference, true},
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauExportValueSyntax, true},
+        {FFlag::LuauExportValueTypecheck, true},
+    };
+
+    fileResolver.source["game/A"] = R"(
+        --!strict
+        local b = require(game.B)
+        return { value = b.value }
+    )";
+    fileResolver.source["game/B"] = R"(
+        --!strict
+        type AModule = typeof(require(game.A))
+        return { value = 1 }
+    )";
+
+    CheckResult result = getFrontend().check("game/A");
+    LUAU_CHECK_NO_ERRORS(result);
+
+    auto snA = getFrontend().sourceNodes["game/A"];
+    auto snB = getFrontend().sourceNodes["game/B"];
+    REQUIRE(snA);
+    REQUIRE(snB);
+
+    CHECK(snA->requireSet.contains("game/B"));
+    CHECK(snB->requireSet.empty());
+    CHECK(snA->typeRequireSet.empty());
+    CHECK(snB->typeRequireSet.contains("game/A"));
+
+    ModuleSCCPtr sccA = snA->scc.lock();
+    ModuleSCCPtr sccB = snB->scc.lock();
+    REQUIRE(sccA);
+    CHECK(sccA == sccB);
+}
+
+TEST_CASE_FIXTURE(FrontendFixture, "type_only_dependents_are_invalidated_and_rebuilt")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::LuauCyclicRequireTypeInference, true},
+        {FFlag::DebugLuauForceOldSolver, false},
+    };
+
+    fileResolver.source["game/A"] = R"(
+        --!strict
+        type BModule = typeof(require(game.B))
+        return {}
+    )";
+    fileResolver.source["game/B"] = "return {}";
+
+    LUAU_REQUIRE_NO_ERRORS(getFrontend().check("game/A"));
+
+    auto snA = getFrontend().sourceNodes["game/A"];
+    auto snB = getFrontend().sourceNodes["game/B"];
+    REQUIRE(snA);
+    REQUIRE(snB);
+    CHECK(snB->typeDependents.contains("game/A"));
+
+    fileResolver.source["game/B"] = "return { changed = true }";
+    getFrontend().markDirty("game/B");
+    CHECK(getFrontend().isDirty("game/A"));
+
+    LUAU_REQUIRE_NO_ERRORS(getFrontend().check("game/A"));
+
+    fileResolver.source["game/A"] = "return {}";
+    getFrontend().markDirty("game/A");
+    LUAU_REQUIRE_NO_ERRORS(getFrontend().check("game/A"));
+
+    CHECK(snA->typeRequireSet.empty());
+    CHECK(!snB->typeDependents.contains("game/A"));
+}
+
 TEST_CASE_FIXTURE(FrontendFixture, "scc_non_export_cycle_reports_errors")
 {
     ScopedFastFlag sffs[] = {
