@@ -16,6 +16,7 @@ struct ConstraintSet
     NotNull<Scope> rootScope;
 
     std::vector<ConstraintPtr> constraints;
+    std::vector<ConstraintPtr> mergedDeferredConstraints;
 
     // The set of all free types created during constraint generation
     TypeIds freeTypes;

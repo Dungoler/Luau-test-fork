@@ -296,14 +296,28 @@ ConstraintSet ConstraintGenerator::run(AstStatBlock* block)
 {
     visitModuleRoot(block);
 
-    return ConstraintSet{NotNull{rootScope}, std::move(constraints), std::move(freeTypes), std::move(scopeToFunction), std::move(errors)};
+    return ConstraintSet{
+        NotNull{rootScope},
+        std::move(constraints),
+        {},
+        std::move(freeTypes),
+        std::move(scopeToFunction),
+        std::move(errors),
+    };
 }
 
 ConstraintSet ConstraintGenerator::runOnFragment(const ScopePtr& resumeScope, AstStatBlock* block)
 {
     visitFragmentRoot(resumeScope, block);
 
-    return ConstraintSet{NotNull{rootScope}, std::move(constraints), std::move(freeTypes), std::move(scopeToFunction), std::move(errors)};
+    return ConstraintSet{
+        NotNull{rootScope},
+        std::move(constraints),
+        {},
+        std::move(freeTypes),
+        std::move(scopeToFunction),
+        std::move(errors),
+    };
 }
 
 void ConstraintGenerator::visitModuleRoot(AstStatBlock* block)

@@ -145,6 +145,11 @@ static void errorToString(std::ostream& stream, const T& err)
 
         stream << "}";
     }
+    else if constexpr (std::is_same_v<T, CyclicModuleTopLevelAccess>)
+    {
+        stream << "CyclicModuleTopLevelAccess { localName = '" << err.localName << "', propName = '" << err.propName << "', cyclicModuleName = '"
+               << err.cyclicModuleName << "' }";
+    }
     else if constexpr (std::is_same_v<T, IllegalRequire>)
         stream << "IllegalRequire { " << err.moduleName << ", reason = " << err.reason << " }";
     else if constexpr (std::is_same_v<T, FunctionExitsWithoutReturning>)

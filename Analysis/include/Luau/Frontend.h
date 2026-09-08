@@ -3,6 +3,7 @@
 
 #include "Luau/Config.h"
 #include "Luau/ConfigResolver.h"
+#include "Luau/DenseHash.h"
 #include "Luau/GlobalTypes.h"
 #include "Luau/Module.h"
 #include "Luau/ModuleResolver.h"
@@ -10,7 +11,6 @@
 #include "Luau/Scope.h"
 #include "Luau/Set.h"
 #include "Luau/TypeCheckLimits.h"
-
 #include <mutex>
 #include <string>
 #include <vector>
@@ -44,6 +44,14 @@ struct LoadDefinitionFileResult
 
 std::optional<Mode> parseMode(const std::vector<HotComment>& hotcomments);
 
+struct ModuleSCC
+{
+    std::vector<ModuleName> members;
+    std::shared_ptr<TypeArena> sharedArena;
+};
+
+using ModuleSCCPtr = std::shared_ptr<ModuleSCC>;
+
 struct SourceNode
 {
     bool hasDirtySourceModule() const
@@ -71,9 +79,19 @@ struct SourceNode
 
     ModuleName name;
     std::string humanReadableName;
+
+    // Runtime module dependencies.
     DenseHashSet<ModuleName> requireSet{{}};
     std::vector<std::pair<ModuleName, Location>> requireLocations;
     Set<ModuleName> dependents{{}};
+
+    // Type-check-only module dependencies.
+    DenseHashSet<ModuleName> typeRequireSet{{}};
+    std::vector<std::pair<ModuleName, Location>> typeRequireLocations;
+    DenseHashSet<ModuleName> typeDependents{{}};
+
+    // SCC containing this module, if any.
+    std::weak_ptr<ModuleSCC> scc;
 
     bool dirtySourceModule = true;
     bool dirtyModule = true;
@@ -96,11 +114,10 @@ struct FrontendOptions
     // Run typechecking only in mode required for autocomplete (strict mode in
     // order to get more precise type information)
     bool forAutocomplete = false;
-
     bool runLintChecks = false;
 
     // If not empty, randomly shuffle the constraint set before attempting to
-    // solve.  Use this value to seed the random number generator.
+    // solve. Use this value to seed the random number generator.
     std::optional<unsigned> randomizeConstraintResolutionSeed;
 
     std::optional<LintOptions> enabledLintWarnings;
@@ -110,7 +127,8 @@ struct FrontendOptions
     // Time limit for typechecking a single module
     std::optional<double> moduleTimeLimitSec;
 
-    // When true, some internal complexity limits will be scaled down for modules that miss the limit set by moduleTimeLimitSec
+    // When true, some internal complexity limits will be scaled down for
+    // modules that miss the limit set by moduleTimeLimitSec
     bool applyInternalLimitScaling = false;
 
     // An optional callback which is called for every *dirty* module was checked
@@ -124,9 +142,7 @@ struct FrontendOptions
 struct CheckResult
 {
     std::vector<TypeError> errors;
-
     LintResult lintResult;
-
     std::vector<ModuleName> timeoutHits;
 };
 
@@ -136,16 +152,25 @@ struct FrontendModuleResolver : ModuleResolver
 
     const ModulePtr getModule(const ModuleName& moduleName) const override;
     bool moduleExists(const ModuleName& moduleName) const override;
-    std::optional<ModuleInfo> resolveModuleInfo(const ModuleName& currentModuleName, const AstExpr& pathExpr) override;
-    std::string getHumanReadableModuleName(const ModuleName& moduleName) const override;
 
-    bool setModule(const ModuleName& moduleName, ModulePtr module);
+    std::optional<ModuleInfo> resolveModuleInfo(
+        const ModuleName& currentModuleName,
+        const AstExpr& pathExpr
+    ) override;
+
+    std::string getHumanReadableModuleName(
+        const ModuleName& moduleName
+    ) const override;
+
+    bool setModule(
+        const ModuleName& moduleName,
+        ModulePtr module
+    );
+
     void clearModules();
-
 
 private:
     Frontend* frontend;
-
     mutable std::mutex moduleMutex;
     std::unordered_map<ModuleName, ModulePtr> modules;
 };
@@ -174,35 +199,57 @@ struct Frontend
 
         size_t dynamicConstraintsCreated = 0;
     };
-    Frontend(SolverMode mode, FileResolver* fileResolver, ConfigResolver* configResolver, FrontendOptions options = {});
-    Frontend(FileResolver* fileResolver, ConfigResolver* configResolver, const FrontendOptions& options = {});
+
+    Frontend(
+        SolverMode mode,
+        FileResolver* fileResolver,
+        ConfigResolver* configResolver,
+        FrontendOptions options = {}
+    );
+
+    Frontend(
+        FileResolver* fileResolver,
+        ConfigResolver* configResolver,
+        const FrontendOptions& options = {}
+    );
 
     void setLuauSolverMode(SolverMode mode);
     SolverMode getLuauSolverMode() const;
+
     // The default value assuming there is no workspace setup yet
     std::atomic<SolverMode> useNewLuauSolver;
-    // Parse module graph and prepare SourceNode/SourceModule data, including required dependencies without running typechecking
+
+    // Parse module graph and prepare SourceNode/SourceModule data,
+    // including required dependencies without running typechecking.
     void parse(const ModuleName& name);
     void parseModules(const std::vector<ModuleName>& name);
 
-    // Parse and typecheck module graph
-    CheckResult check(const ModuleName& name, std::optional<FrontendOptions> optionOverride = {}); // new shininess
+    // Parse and typecheck module graph.
+    CheckResult check(
+        const ModuleName& name,
+        std::optional<FrontendOptions> optionOverride = {}
+    );
 
-    bool allModuleDependenciesValid(const ModuleName& name, bool forAutocomplete = false) const;
+    bool allModuleDependenciesValid(
+        const ModuleName& name,
+        bool forAutocomplete = false
+    ) const;
 
-    bool isDirty(const ModuleName& name, bool forAutocomplete = false) const;
-    void markDirty(const ModuleName& name, std::vector<ModuleName>* markedDirty = nullptr);
+    bool isDirty(
+        const ModuleName& name,
+        bool forAutocomplete = false
+    ) const;
 
-    void traverseDependents(const ModuleName& name, std::function<bool(SourceNode&)> processSubtree);
+    void markDirty(
+        const ModuleName& name,
+        std::vector<ModuleName>* markedDirty = nullptr
+    );
 
-    /** Borrow a pointer into the SourceModule cache.
-     *
-     * Returns nullptr if we don't have it.  This could mean that the script
-     * doesn't exist, or simply that its contents have changed since the previous
-     * check, in which case we do not have its AST.
-     *
-     * IMPORTANT: this pointer is only valid until the next call to markDirty.  Do not retain it.
-     */
+    void traverseDependents(
+        const ModuleName& name,
+        std::function<bool(SourceNode&)> processSubtree
+    );
+
     SourceModule* getSourceModule(const ModuleName& name);
     const SourceModule* getSourceModule(const ModuleName& name) const;
 
@@ -211,10 +258,19 @@ struct Frontend
     void clearBuiltinEnvironments();
 
     ScopePtr addEnvironment(const std::string& environmentName);
-    ScopePtr getEnvironmentScope(const std::string& environmentName) const;
+    ScopePtr getEnvironmentScope(
+        const std::string& environmentName
+    ) const;
 
-    void registerBuiltinDefinition(const std::string& name, std::function<void(Frontend&, GlobalTypes&, ScopePtr)>);
-    void applyBuiltinDefinitionToEnvironment(const std::string& environmentName, const std::string& definitionName);
+    void registerBuiltinDefinition(
+        const std::string& name,
+        std::function<void(Frontend&, GlobalTypes&, ScopePtr)>
+    );
+
+    void applyBuiltinDefinitionToEnvironment(
+        const std::string& environmentName,
+        const std::string& definitionName
+    );
 
     LoadDefinitionFileResult loadDefinitionFile(
         GlobalTypes& globals,
@@ -225,18 +281,26 @@ struct Frontend
         bool typeCheckForAutocomplete = false
     );
 
-    // Batch module checking. Queue modules and check them together, retrieve results with 'getCheckResult'
-    // If provided, 'executeTasks' function is allowed to call any item in 'tasks' on any thread and return without waiting for them to complete
+    // Batch module checking.
     void queueModuleCheck(const std::vector<ModuleName>& names);
     void queueModuleCheck(const ModuleName& name);
+
     std::vector<ModuleName> checkQueuedModules(
         std::optional<FrontendOptions> optionOverride = {},
         std::function<void(std::vector<std::function<void()>> tasks)> executeTasks = {},
         std::function<bool(size_t done, size_t total)> progress = {}
     );
 
-    std::optional<CheckResult> getCheckResult(const ModuleName& name, bool accumulateNested, bool forAutocomplete = false);
-    std::vector<ModuleName> getRequiredScripts(const ModuleName& name, const TypeCheckLimits& limits);
+    std::optional<CheckResult> getCheckResult(
+        const ModuleName& name,
+        bool accumulateNested,
+        bool forAutocomplete = false
+    );
+
+    std::vector<ModuleName> getRequiredScripts(
+        const ModuleName& name,
+        const TypeCheckLimits& limits
+    );
 
     TypeId parseType(
         NotNull<Allocator> allocator,
@@ -259,8 +323,16 @@ private:
         TypeCheckLimits typeCheckLimits
     );
 
-    std::pair<SourceNode*, SourceModule*> getSourceNode(const ModuleName& name, const TypeCheckLimits& limits);
-    SourceModule parse(const ModuleName& name, std::string_view src, const ParseOptions& parseOptions);
+    std::pair<SourceNode*, SourceModule*> getSourceNode(
+        const ModuleName& name,
+        const TypeCheckLimits& limits
+    );
+
+    SourceModule parse(
+        const ModuleName& name,
+        std::string_view src,
+        const ParseOptions& parseOptions
+    );
 
     bool parseGraph(
         std::vector<ModuleName>& buildQueue,
@@ -277,18 +349,58 @@ private:
         DenseHashSet<Luau::ModuleName>& seen,
         const FrontendOptions& frontendOptions
     );
-    void checkBuildQueueItem(BuildQueueItem& item);
-    void checkBuildQueueItems(std::vector<BuildQueueItem>& items);
-    void recordItemResult(const BuildQueueItem& item);
-    void performQueueItemTask(std::shared_ptr<BuildQueueWorkState> state, size_t itemPos);
-    void sendQueueItemTasks(std::shared_ptr<BuildQueueWorkState> state, const std::vector<size_t>& items);
-    void sendQueueCycleItemTask(std::shared_ptr<BuildQueueWorkState> state);
 
-    static LintResult classifyLints(const std::vector<LintWarning>& warnings, const Config& config);
+    void computeSCCs(
+        const std::vector<ModuleName>& buildQueue
+    );
 
-    ScopePtr getModuleEnvironment(const SourceModule& module, const Config& config, bool forAutocomplete) const;
+    void checkSCCBuildQueueItem(
+        BuildQueueItem& item
+    );
+
+    void checkBuildQueueItem(
+        BuildQueueItem& item
+    );
+
+    void checkBuildQueueItems(
+        std::vector<BuildQueueItem>& items
+    );
+
+    void recordItemResult(
+        const BuildQueueItem& item
+    );
+
+    void performQueueItemTask(
+        std::shared_ptr<BuildQueueWorkState> state,
+        size_t itemPos
+    );
+
+    void sendQueueItemTasks(
+        std::shared_ptr<BuildQueueWorkState> state,
+        const std::vector<size_t>& items
+    );
+
+    void sendQueueCycleItemTask(
+        std::shared_ptr<BuildQueueWorkState> state
+    );
+
+    static LintResult classifyLints(
+        const std::vector<LintWarning>& warnings,
+        const Config& config
+    );
+
+    ScopePtr getModuleEnvironment(
+        const SourceModule& module,
+        const Config& config,
+        bool forAutocomplete
+    ) const;
+
     std::unordered_map<std::string, ScopePtr> environments;
-    std::unordered_map<std::string, std::function<void(Frontend&, GlobalTypes&, ScopePtr)>> builtinDefinitions;
+
+    std::unordered_map<
+        std::string,
+        std::function<void(Frontend&, GlobalTypes&, ScopePtr)>
+    > builtinDefinitions;
 
     BuiltinTypes builtinTypes_;
 
@@ -304,14 +416,43 @@ public:
     GlobalTypes globalsForAutocomplete;
 
     ConfigResolver* configResolver;
-    FrontendOptions options;
-    InternalErrorReporter iceHandler;
-    std::function<void(const ModuleName& name, const ScopePtr& scope, bool forAutocomplete)> prepareModuleScope;
-    std::function<void(const ModuleName& name, std::string log)> writeJsonLog = {};
 
-    std::unordered_map<ModuleName, std::shared_ptr<SourceNode>> sourceNodes;
-    std::unordered_map<ModuleName, std::shared_ptr<SourceModule>> sourceModules;
-    std::unordered_map<ModuleName, RequireTraceResult> requireTrace;
+    FrontendOptions options;
+
+    InternalErrorReporter iceHandler;
+
+    std::function<
+        void(
+            const ModuleName& name,
+            const ScopePtr& scope,
+            bool forAutocomplete
+        )
+    > prepareModuleScope;
+
+    std::function<void(
+        const ModuleName& name,
+        std::string log
+    )> writeJsonLog = {};
+
+    std::unordered_map<
+        ModuleName,
+        std::shared_ptr<SourceNode>
+    > sourceNodes;
+
+    std::unordered_map<
+        ModuleName,
+        std::shared_ptr<SourceModule>
+    > sourceModules;
+
+    std::unordered_map<
+        ModuleName,
+        RequireTraceResult
+    > requireTrace;
+
+    DenseHashMap<
+        ModuleName,
+        ModuleSCCPtr
+    > sccs;
 
     Stats stats = {};
 

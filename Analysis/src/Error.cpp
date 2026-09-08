@@ -484,6 +484,17 @@ struct ErrorConverter
         return s;
     }
 
+    std::string operator()(const Luau::CyclicModuleTopLevelAccess& e) const
+    {
+        std::string moduleName = fileResolver ? fileResolver->getHumanReadableModuleName(e.cyclicModuleName) : e.cyclicModuleName;
+
+        std::string access = e.propName.empty() ? e.localName : (e.localName + "." + e.propName);
+
+        return "Top-level access '" + access + "' from cyclically required module '" + moduleName +
+               "' may fail at runtime depending on module initialization order; "
+               "try moving this access into a function body";
+    }
+
     std::string operator()(const Luau::FunctionExitsWithoutReturning& e) const
     {
         return "Not all codepaths in this function return '" + toString(e.expectedReturnType) + "'.";
@@ -1254,6 +1265,11 @@ bool ModuleHasCyclicDependency::operator==(const ModuleHasCyclicDependency& rhs)
     return cycle.size() == rhs.cycle.size() && std::equal(cycle.begin(), cycle.end(), rhs.cycle.begin());
 }
 
+bool CyclicModuleTopLevelAccess::operator==(const CyclicModuleTopLevelAccess& rhs) const
+{
+    return cyclicModuleName == rhs.cyclicModuleName && localName == rhs.localName && propName == rhs.propName;
+}
+
 bool IllegalRequire::operator==(const IllegalRequire& rhs) const
 {
     return moduleName == rhs.moduleName && reason == rhs.reason;
@@ -1563,6 +1579,9 @@ void copyError(T& e, TypeArena& destArena, CloneState& cloneState)
     {
     }
     else if constexpr (std::is_same_v<T, ModuleHasCyclicDependency>)
+    {
+    }
+    else if constexpr (std::is_same_v<T, CyclicModuleTopLevelAccess>)
     {
     }
     else if constexpr (std::is_same_v<T, IllegalRequire>)

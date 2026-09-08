@@ -236,6 +236,15 @@ struct ModuleHasCyclicDependency
     bool operator==(const ModuleHasCyclicDependency& rhs) const;
 };
 
+struct CyclicModuleTopLevelAccess
+{
+    ModuleName cyclicModuleName;
+    Name localName;
+    Name propName;
+
+    bool operator==(const CyclicModuleTopLevelAccess& rhs) const;
+};
+
 struct FunctionExitsWithoutReturning
 {
     TypePackId expectedReturnType;
@@ -628,6 +637,7 @@ using TypeErrorData = Variant<
     ExtraInformation,
     DeprecatedApiUsed,
     ModuleHasCyclicDependency,
+    CyclicModuleTopLevelAccess,
     IllegalRequire,
     FunctionExitsWithoutReturning,
     DuplicateGenericParameter,

@@ -1,4 +1,5 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
+
 #include "Luau/AstQuery.h"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Common.h"
@@ -11,7 +12,6 @@
 
 #include "Luau/Type.h"
 #include "doctest.h"
-
 #include <algorithm>
 
 using namespace Luau;
@@ -21,12 +21,16 @@ LUAU_FASTFLAG(DebugLuauFreezeArena)
 LUAU_FASTFLAG(DebugLuauMagicTypes)
 LUAU_FASTFLAG(LuauExportValueSyntax)
 LUAU_FASTFLAG(LuauExportValueTypecheck)
-LUAU_FASTFLAG(LuauDontBindOptionalGenericToNil)
 LUAU_FASTFLAG(LuauSubtypingMissingPropertiesAsNil)
 LUAU_FASTFLAG(LuauBidirectionalInferenceSimplifyTables)
+LUAU_FASTFLAG(LuauFrontendSourceNodeErase)
+LUAU_FASTFLAG(LuauCyclicRequireTypeInference)
+LUAU_FASTFLAG(LuauExportAnnotationBinding)
+LUAU_FASTFLAG(LuauCyclicRequireTopLevelAccessError)
 
 namespace
 {
+
 struct NaiveFileResolver : NullFileResolver
 {
     std::optional<ModuleInfo> resolveModule(const ModuleInfo* context, AstExpr* expr, const TypeCheckLimits& limits) override
@@ -35,7 +39,6 @@ struct NaiveFileResolver : NullFileResolver
         {
             if (g->name == "Modules")
                 return ModuleInfo{"Modules"};
-
             if (g->name == "game")
                 return ModuleInfo{"game"};
         }
@@ -49,7 +52,6 @@ struct NaiveFileResolver : NullFileResolver
             if (AstExprConstantString* index = call->args.data[0]->as<AstExprConstantString>())
             {
                 AstName func = call->func->as<AstExprIndexName>()->index;
-
                 if (func == "GetService" && context->name == "game")
                     return ModuleInfo{"game/" + std::string(index->value.data, index->value.size)};
             }
@@ -69,7 +71,6 @@ struct FrontendFixture : BuiltinsFixture
     {
         if (frontend)
             return *frontend;
-
         Frontend& f = BuiltinsFixture::getFrontend();
         addGlobalBinding(f.globals, "game", f.builtinTypes->anyType, "@test");
         addGlobalBinding(f.globals, "script", f.builtinTypes->anyType, "@test");
@@ -100,7 +101,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "find_a_require")
     )");
 
     NaiveFileResolver naiveFileResolver;
-
     auto res = traceRequires(&naiveFileResolver, program, "", {});
     CHECK_EQ(1, res.requireList.size());
     CHECK_EQ(res.requireList[0].first, "Modules/Foo/Bar");
@@ -116,7 +116,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "find_a_require_inside_a_function")
     )");
 
     NaiveFileResolver naiveFileResolver;
-
     auto res = traceRequires(&naiveFileResolver, program, "", {});
     CHECK_EQ(1, res.requireList.size());
 }
@@ -129,7 +128,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "real_source")
 
             local Roact = require(Modules.Common.Roact)
             local Rodux = require(Modules.Common.Rodux)
-
             local AppReducer = require(Modules.LuaApp.AppReducer)
             local AEAppReducer = require(Modules.LuaApp.Reducers.AEReducers.AEAppReducer)
             local AETabList = require(Modules.LuaApp.Components.Avatar.UI.Views.Portrait.AETabList)
@@ -139,7 +137,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "real_source")
             local FFlagAvatarEditorEnableThemes = settings():GetFFlag("AvatarEditorEnableThemes2")
         end
     )");
-
     NaiveFileResolver naiveFileResolver;
 
     auto res = traceRequires(&naiveFileResolver, program, "", {});
@@ -154,7 +151,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "automatically_check_dependent_scripts")
         local A = require(Modules.A)
         return {b_value = A.hello}
     )";
-
     getFrontend().check("game/Gui/Modules/B");
 
     ModulePtr bModule = getFrontend().moduleResolver.getModule("game/Gui/Modules/B");
@@ -186,7 +182,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "automatically_check_cyclically_dependent_scr
         do local A = require(Modules.A) end
         return {}
     )";
-
     fileResolver.source["game/Gui/Modules/D"] = R"(
         local Modules = game:GetService('Gui').Modules
         do local A = require(Modules.A) end
@@ -197,9 +192,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "automatically_check_cyclically_dependent_scr
     LUAU_REQUIRE_ERROR_COUNT(4, result1);
 
     CHECK_MESSAGE(get<ModuleHasCyclicDependency>(result1.errors[0]), "Should have been a ModuleHasCyclicDependency: " << toString(result1.errors[0]));
-
     CHECK_MESSAGE(get<ModuleHasCyclicDependency>(result1.errors[1]), "Should have been a ModuleHasCyclicDependency: " << toString(result1.errors[1]));
-
     CHECK_MESSAGE(get<ModuleHasCyclicDependency>(result1.errors[2]), "Should have been a ModuleHasCyclicDependency: " << toString(result1.errors[2]));
 
     CheckResult result2 = getFrontend().check("game/Gui/Modules/D");
@@ -219,7 +212,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "export_value_modules_have_typed_require_surf
             return x + 1
         end
     )";
-
     fileResolver.source["game/ModuleB"] = R"(
         --!strict
         local M = require(game.ModuleA)
@@ -236,7 +228,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "export_value_modules_have_typed_require_surf
 
     CheckResult bResult = getFrontend().check("game/ModuleB");
     LUAU_REQUIRE_NO_ERRORS(bResult);
-
     ModulePtr moduleA = getFrontend().moduleResolver.getModule("game/ModuleA");
     REQUIRE(moduleA != nullptr);
 
@@ -257,7 +248,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "any_annotation_breaks_cycle")
         local A = require(Modules.A) :: any
         return {hello = A.hello}
     )";
-
     CheckResult result = getFrontend().check("game/Gui/Modules/A");
     LUAU_REQUIRE_NO_ERRORS(result);
 }
@@ -280,7 +270,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "nocheck_modules_are_typed")
         local B = require(Modules.B)
         local five : A.Foo = 5
     )";
-
     CheckResult result = getFrontend().check("game/Gui/Modules/C");
     LUAU_REQUIRE_NO_ERRORS(result);
 
@@ -292,7 +281,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "nocheck_modules_are_typed")
 
     ModulePtr bModule = getFrontend().moduleResolver.getModule("game/Gui/Modules/B");
     REQUIRE(bool(bModule));
-
     std::optional<TypeId> bExports = first(bModule->returnType);
     REQUIRE(bool(bExports));
 
@@ -312,7 +300,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "cycle_detection_between_check_and_nocheck")
         local A = require(Modules.A)
         return {hello = A.hello}
     )";
-
     CheckResult result = getFrontend().check("game/Gui/Modules/A");
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 }
@@ -338,7 +325,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "nocheck_cycle_used_by_checked")
         local B = require(Modules.B)
         return {a=A, b=B}
     )";
-
     CheckResult result = getFrontend().check("game/Gui/Modules/C");
     LUAU_REQUIRE_NO_ERRORS(result);
 
@@ -365,7 +351,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "cycle_detection_disabled_in_nocheck")
         local A = require(Modules.A)
         return {hello = A.hello}
     )";
-
     CheckResult result = getFrontend().check("game/Gui/Modules/A");
     LUAU_REQUIRE_NO_ERRORS(result);
 }
@@ -382,12 +367,10 @@ TEST_CASE_FIXTURE(FrontendFixture, "cycle_errors_can_be_fixed")
         local A = require(Modules.A)
         return {hello = A.hello}
     )";
-
     CheckResult result1 = getFrontend().check("game/Gui/Modules/A");
     LUAU_REQUIRE_ERROR_COUNT(2, result1);
 
     CHECK_MESSAGE(get<ModuleHasCyclicDependency>(result1.errors[0]), "Should have been a ModuleHasCyclicDependency: " << toString(result1.errors[0]));
-
     CHECK_MESSAGE(get<ModuleHasCyclicDependency>(result1.errors[1]), "Should have been a ModuleHasCyclicDependency: " << toString(result1.errors[1]));
 
     fileResolver.source["game/Gui/Modules/B"] = R"(
@@ -411,7 +394,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "cycle_error_paths")
         local A = require(Modules.A)
         return {hello = A.hello}
     )";
-
     CheckResult result = getFrontend().check("game/Gui/Modules/A");
     LUAU_REQUIRE_ERROR_COUNT(2, result);
 
@@ -435,7 +417,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "cycle_incremental_type_surface")
     fileResolver.source["game/A"] = R"(
         return {hello = 2}
     )";
-
     CheckResult result = getFrontend().check("game/A");
     LUAU_REQUIRE_NO_ERRORS(result);
 
@@ -542,7 +523,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "dont_reparse_clean_file_when_linting")
 
         for i=#t,1 do
         end
-
         for i=#t,1,-1 do
         end
     )";
@@ -624,18 +604,20 @@ TEST_CASE_FIXTURE(FrontendFixture, "mark_non_immediate_reverse_deps_as_dirty")
 
     std::vector<Luau::ModuleName> markedDirty;
     getFrontend().markDirty("game/Gui/Modules/A", &markedDirty);
-
     REQUIRE(markedDirty.size() == 3);
+
     CHECK(std::find(markedDirty.begin(), markedDirty.end(), "game/Gui/Modules/A") != markedDirty.end());
     CHECK(std::find(markedDirty.begin(), markedDirty.end(), "game/Gui/Modules/B") != markedDirty.end());
     CHECK(std::find(markedDirty.begin(), markedDirty.end(), "game/Gui/Modules/C") != markedDirty.end());
 }
 
 #if 0
+
 // Does not work yet. :(
 TEST_CASE_FIXTURE(FrontendFixture, "recheck_if_dependent_script_has_a_parse_error")
 {
     fileResolver.source["Modules/A"] = "oh no a syntax error";
+
     fileResolver.source["Modules/B"] = R"(
         local Modules = {}
         local A = require(Modules.A)
@@ -650,6 +632,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "recheck_if_dependent_script_has_a_parse_erro
     LUAU_REQUIRE_ERROR_COUNT(1, result2);
     CHECK_EQ(result2.errors[0], result.errors[0]);
 }
+
 #endif
 
 TEST_CASE_FIXTURE(FrontendFixture, "produce_errors_for_unchanged_file_with_a_syntax_error")
@@ -671,6 +654,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "produce_errors_for_unchanged_file_with_error
 
     fileResolver.source["Modules/A"] =
         "local p = 4 -- We have fixed the problem, but we didn't tell the getFrontend(). so it will not recheck this file!";
+
     CheckResult secondResult = getFrontend().check("Modules/A");
 
     CHECK_EQ(1, secondResult.errors.size());
@@ -724,6 +708,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "ignore_require_to_nonexistent_file")
 TEST_CASE_FIXTURE(FrontendFixture, "report_syntax_error_in_required_file")
 {
     fileResolver.source["Modules/A"] = "oh no a gross breach of syntax";
+
     fileResolver.source["Modules/B"] = R"(
         local Modules = script.Parent
         local A = require(Modules.A)
@@ -731,7 +716,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "report_syntax_error_in_required_file")
 
     CheckResult result = getFrontend().check("Modules/B");
     LUAU_REQUIRE_ERRORS(result);
-
     CHECK_EQ("Modules/A", result.errors[0].moduleName);
 
     bool b = std::any_of(
@@ -742,6 +726,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "report_syntax_error_in_required_file")
             return get<SyntaxError>(e);
         }
     );
+
     if (!b)
     {
         CHECK_MESSAGE(false, "Expected a syntax error!");
@@ -786,16 +771,12 @@ TEST_CASE_FIXTURE(FrontendFixture, "accumulate_cached_errors")
     )";
 
     CheckResult result1 = getFrontend().check("Modules/B");
-
     LUAU_REQUIRE_ERROR_COUNT(2, result1);
-
     CHECK_EQ("Modules/A", result1.errors[0].moduleName);
     CHECK_EQ("Modules/B", result1.errors[1].moduleName);
 
     CheckResult result2 = getFrontend().check("Modules/B");
-
     LUAU_REQUIRE_ERROR_COUNT(2, result2);
-
     CHECK_EQ("Modules/A", result2.errors[0].moduleName);
     CHECK_EQ("Modules/B", result2.errors[1].moduleName);
 }
@@ -816,12 +797,10 @@ TEST_CASE_FIXTURE(FrontendFixture, "accumulate_cached_errors_in_consistent_order
     )";
 
     CheckResult result1 = getFrontend().check("Modules/A");
-
     LUAU_REQUIRE_ERROR_COUNT(4, result1);
 
     CHECK_EQ("Modules/A", result1.errors[2].moduleName);
     CHECK_EQ("Modules/A", result1.errors[3].moduleName);
-
     CHECK_EQ("Modules/B", result1.errors[0].moduleName);
     CHECK_EQ("Modules/B", result1.errors[1].moduleName);
 
@@ -838,21 +817,28 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_pruneParentSegments")
         std::optional<std::string>{"Modules/Enum/ButtonState"},
         pathExprToModuleName("", {"Modules", "LuaApp", "DeprecatedDarkTheme", "Parent", "Parent", "Enum", "ButtonState"})
     );
-    CHECK_EQ(std::optional<std::string>{"workspace/Foo/Bar/Baz"}, pathExprToModuleName("workspace/Foo/Quux", {"script", "Parent", "Bar", "Baz"}));
+
+    CHECK_EQ(
+        std::optional<std::string>{"workspace/Foo/Bar/Baz"},
+        pathExprToModuleName("workspace/Foo/Quux", {"script", "Parent", "Bar", "Baz"})
+    );
+
     CHECK_EQ(std::nullopt, pathExprToModuleName("", {}));
     CHECK_EQ(std::optional<std::string>{"script"}, pathExprToModuleName("", {"script"}));
     CHECK_EQ(std::optional<std::string>{"script/Parent"}, pathExprToModuleName("", {"script", "Parent"}));
     CHECK_EQ(std::optional<std::string>{"script"}, pathExprToModuleName("", {"script", "Parent", "Parent"}));
     CHECK_EQ(std::optional<std::string>{"script"}, pathExprToModuleName("", {"script", "Test", "Parent"}));
     CHECK_EQ(std::optional<std::string>{"script/Parent"}, pathExprToModuleName("", {"script", "Test", "Parent", "Parent"}));
-    CHECK_EQ(std::optional<std::string>{"script/Parent"}, pathExprToModuleName("", {"script", "Test", "Parent", "Test", "Parent", "Parent"}));
+    CHECK_EQ(
+        std::optional<std::string>{"script/Parent"},
+        pathExprToModuleName("", {"script", "Test", "Parent", "Test", "Parent", "Parent"})
+    );
 }
 
 TEST_CASE_FIXTURE(FrontendFixture, "test_lint_uses_correct_config")
 {
     fileResolver.source["Module/A"] = R"(
         local t = {}
-
         for i=#t,1 do
         end
     )";
@@ -869,10 +855,9 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_lint_uses_correct_config")
     CHECK_EQ(0, result2.warnings.size());
 
     LintOptions overrideOptions;
-
     overrideOptions.enableWarning(LintWarning::Code_ForRange);
-    getFrontend().markDirty("Module/A");
 
+    getFrontend().markDirty("Module/A");
     auto result3 = lintModule("Module/A", overrideOptions);
     CHECK_EQ(1, result3.warnings.size());
 
@@ -911,7 +896,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "discard_type_graphs")
     )";
 
     CheckResult result = fe.check("Module/A");
-
     ModulePtr module = fe.moduleResolver.getModule("Module/A");
 
     CHECK_EQ(0, module->internalTypes.types.size());
@@ -923,14 +907,19 @@ TEST_CASE_FIXTURE(FrontendFixture, "discard_type_graphs")
 
 TEST_CASE_FIXTURE(FrontendFixture, "it_should_be_safe_to_stringify_errors_when_full_type_graph_is_discarded")
 {
-    Frontend fe{!FFlag::DebugLuauForceOldSolver ? SolverMode::New : SolverMode::Old, &fileResolver, &configResolver, {false}};
+    Frontend fe{
+        !FFlag::DebugLuauForceOldSolver ? SolverMode::New : SolverMode::Old,
+        &fileResolver,
+        &configResolver,
+        {false}
+    };
+
     fileResolver.source["Module/A"] = R"(
         --!strict
         local a: {Count: number} = {count='five'}
     )";
 
     CheckResult result = fe.check("Module/A");
-
     REQUIRE_EQ(1, result.errors.size());
 
     // When this test fails, it is because the TypeIds needed by the error have been deallocated.
@@ -944,9 +933,12 @@ TEST_CASE_FIXTURE(FrontendFixture, "it_should_be_safe_to_stringify_errors_when_f
         );
     }
     else
+    {
         REQUIRE_EQ(
-            "Table type 'a' not compatible with type '{ Count: number }' because the former is missing field 'Count'", toString(result.errors[0])
+            "Table type 'a' not compatible with type '{ Count: number }' because the former is missing field 'Count'",
+            toString(result.errors[0])
         );
+    }
 }
 
 TEST_CASE_FIXTURE(FrontendFixture, "trace_requires_in_nonstrict_mode")
@@ -976,9 +968,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "trace_requires_in_nonstrict_mode")
     )";
 
     CheckResult result = getFrontend().check("Module/B");
-
     LUAU_REQUIRE_ERROR_COUNT(2, result);
-
     CHECK_EQ(4, result.errors[0].location.begin.line);
     CHECK_EQ(5, result.errors[1].location.begin.line);
 }
@@ -988,6 +978,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "environments")
     ScopePtr testScope = getFrontend().addEnvironment("test");
 
     unfreeze(getFrontend().globals.globalTypes);
+
     getFrontend().loadDefinitionFile(
         getFrontend().globals,
         testScope,
@@ -997,6 +988,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "environments")
         "@test",
         /* captureComments */ false
     );
+
     freeze(getFrontend().globals.globalTypes);
 
     fileResolver.source["A"] = R"(
@@ -1030,20 +1022,19 @@ TEST_CASE_FIXTURE(FrontendFixture, "ast_node_at_position")
 {
     check(R"(
         local t = {}
-
         function t:aa() end
-
         t:
     )");
 
     SourceModule* module = getMainSourceModule();
     Position pos = module->root->location.end;
-    AstNode* node = findNodeAtPosition(*module, pos);
 
+    AstNode* node = findNodeAtPosition(*module, pos);
     REQUIRE(node);
     REQUIRE(bool(node->asExpr()));
 
     ++pos.column;
+
     AstNode* node2 = findNodeAtPosition(*module, pos);
     CHECK_EQ(node, node2);
 }
@@ -1072,8 +1063,8 @@ TEST_CASE_FIXTURE(FrontendFixture, "stats_are_not_reset_between_checks")
 
     CheckResult r2 = getFrontend().check("Module/A");
     LUAU_REQUIRE_NO_ERRORS(r2);
-    Frontend::Stats stats2 = getFrontend().stats;
 
+    Frontend::Stats stats2 = getFrontend().stats;
     CHECK_EQ(4, stats2.files);
 }
 
@@ -1098,12 +1089,12 @@ TEST_CASE_FIXTURE(FrontendFixture, "clearStats")
 
     getFrontend().markDirty("Module/A");
     getFrontend().markDirty("Module/B");
-
     getFrontend().clearStats();
+
     CheckResult r2 = getFrontend().check("Module/A");
     LUAU_REQUIRE_NO_ERRORS(r2);
-    Frontend::Stats stats2 = getFrontend().stats;
 
+    Frontend::Stats stats2 = getFrontend().stats;
     CHECK_EQ(2, stats2.files);
 }
 
@@ -1114,10 +1105,10 @@ TEST_CASE_FIXTURE(FrontendFixture, "typecheck_twice_for_ast_types")
     )";
 
     CheckResult result = getFrontend().check("Module/A");
-
     ModulePtr module = getFrontend().moduleResolver.getModule("Module/A");
 
     REQUIRE_EQ(module->astTypes.size(), 1);
+
     auto it = module->astTypes.begin();
     CHECK_EQ(toString(it->second), "number");
 }
@@ -1141,7 +1132,9 @@ return a;
 --!nonstrict
 local a = require(script.Parent.A)
 local b = {}
+
 function a:b() end -- this should error, since A doesn't define a:b()
+
 return b
     )";
 
@@ -1149,6 +1142,7 @@ return b
 --!nonstrict
 local a = require(script.Parent.A)
 local b = require(script.Parent.B)
+
 a:b() -- this should error, since A doesn't define a:b()
     )";
 
@@ -1162,10 +1156,11 @@ a:b() -- this should error, since A doesn't define a:b()
     LUAU_REQUIRE_ERRORS(resultC);
 }
 
-// This test does not use TEST_CASE_FIXTURE because we need to set a flag before
-// the fixture is constructed.
 TEST_CASE("no_use_after_free_with_type_fun_instantiation")
 {
+    // This test does not use TEST_CASE_FIXTURE because we need to set a flag before
+    // the fixture is constructed.
+
     // This flag forces this test to crash if there's a UAF in this code.
     ScopedFastFlag sff_DebugLuauFreezeArena(FFlag::DebugLuauFreezeArena, true);
 
@@ -1173,12 +1168,15 @@ TEST_CASE("no_use_after_free_with_type_fun_instantiation")
 
     fix.fileResolver.source["Module/A"] = R"(
 export type Foo<V> = typeof(setmetatable({}, {}))
+
 return false;
 )";
 
     fix.fileResolver.source["Module/B"] = R"(
 local A = require(script.Parent.A)
+
 export type Foo<V> = A.Foo<V>
+
 return false;
 )";
 
@@ -1191,6 +1189,7 @@ TEST_CASE("check_without_builtin_next")
     TestFileResolver fileResolver;
     TestConfigResolver configResolver;
     Frontend frontend(&fileResolver, &configResolver);
+
     fileResolver.source["Module/A"] = "for k,v in 2 do end";
     fileResolver.source["Module/B"] = "return next";
 
@@ -1226,7 +1225,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "reexport_cyclic_type")
     )";
 
     CheckResult result = getFrontend().check("Module/B");
-
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
@@ -1247,12 +1245,10 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "reexport_type_alias")
     fileResolver.source["Module/B"] = R"(
         --!strict
         local A = require(script.Parent.A)
-
         export type TestFileEvent = A.TestFileEvent
     )";
 
     CheckResult result = getFrontend().check("Module/B");
-
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
@@ -1293,6 +1289,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "parse_only")
     REQUIRE(getFrontend().sourceNodes.count("game/Gui/Modules/B"));
 
     auto node = getFrontend().sourceNodes["game/Gui/Modules/B"];
+
     CHECK(node->requireSet.contains("game/Gui/Modules/A"));
     REQUIRE_EQ(node->requireLocations.size(), 1);
     CHECK_EQ(node->requireLocations[0].second, Luau::Location(Position(2, 18), Position(2, 36)));
@@ -1308,6 +1305,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "parse_only")
 TEST_CASE_FIXTURE(FrontendFixture, "markdirty_early_return")
 {
     constexpr char moduleName[] = "game/Gui/Modules/A";
+
     fileResolver.source[moduleName] = R"(
         return 1
     )";
@@ -1402,6 +1400,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "separate_caches_for_autocomplete")
 
     FrontendOptions opts;
     opts.forAutocomplete = true;
+
     getFrontend().setLuauSolverMode(!FFlag::DebugLuauForceOldSolver ? SolverMode::New : SolverMode::Old);
     getFrontend().check("game/A", opts);
 
@@ -1414,7 +1413,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "separate_caches_for_autocomplete")
     getFrontend().check("game/A");
 
     ModulePtr module = getFrontend().moduleResolver.getModule("game/A");
-
     REQUIRE(module != nullptr);
     CHECK(module->mode == Mode::Nonstrict);
 }
@@ -1438,7 +1436,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "no_separate_caches_with_the_new_solver")
     CHECK(nullptr == getFrontend().moduleResolverForAutocomplete.getModule("game/A"));
 
     ModulePtr module = getFrontend().moduleResolver.getModule("game/A");
-
     REQUIRE(module != nullptr);
     CHECK(module->mode == Mode::Nonstrict);
 }
@@ -1452,21 +1449,19 @@ TEST_CASE_FIXTURE(Fixture, "exported_tables_have_position_metadata")
     LUAU_REQUIRE_NO_ERRORS(result);
 
     ModulePtr mm = getMainModule();
-
     TypePackId retTp = mm->getModuleScope()->returnType;
     auto retHead = flatten(retTp).first;
+
     REQUIRE(1 == retHead.size());
 
     const TableType* tt = get<TableType>(retHead[0]);
     REQUIRE(tt);
 
     CHECK("MainModule" == tt->definitionModuleName);
-
     CHECK(1 == tt->props.size());
     CHECK(tt->props.count("abc"));
 
     const Property& prop = tt->props.find("abc")->second;
-
     CHECK(Location{Position{1, 17}, Position{1, 20}} == prop.location);
 }
 
@@ -1480,9 +1475,11 @@ TEST_CASE_FIXTURE(FrontendFixture, "get_required_scripts")
 
     fileResolver.source["game/workspace/MyModuleScript"] = R"(
         local module = {}
+
         function module.myPrint()
             print("Hello World")
         end
+
         return module
     )";
 
@@ -1493,6 +1490,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "get_required_scripts")
 
     // isDirty(name) is true, getRequiredScripts should not hit the cache.
     getFrontend().markDirty("game/workspace/MyScript");
+
     std::vector<ModuleName> requiredScripts = getFrontend().getRequiredScripts("game/workspace/MyScript", {});
     REQUIRE(requiredScripts.size() == 2);
     CHECK(requiredScripts[0] == "game/workspace/MyModuleScript");
@@ -1500,6 +1498,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "get_required_scripts")
 
     // Call getFrontend().check first, then getRequiredScripts should hit the cache because isDirty(name) is false.
     getFrontend().check("game/workspace/MyScript");
+
     requiredScripts = getFrontend().getRequiredScripts("game/workspace/MyScript", {});
     REQUIRE(requiredScripts.size() == 2);
     CHECK(requiredScripts[0] == "game/workspace/MyModuleScript");
@@ -1514,13 +1513,16 @@ TEST_CASE_FIXTURE(FrontendFixture, "get_required_scripts_dirty")
 
     fileResolver.source["game/workspace/MyModuleScript"] = R"(
         local module = {}
+
         function module.myPrint()
             print("Hello World")
         end
+
         return module
     )";
 
     getFrontend().check("game/workspace/MyScript");
+
     std::vector<ModuleName> requiredScripts = getFrontend().getRequiredScripts("game/workspace/MyScript", {});
     REQUIRE(requiredScripts.size() == 0);
 
@@ -1533,6 +1535,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "get_required_scripts_dirty")
     REQUIRE(requiredScripts.size() == 0);
 
     getFrontend().markDirty("game/workspace/MyScript");
+
     requiredScripts = getFrontend().getRequiredScripts("game/workspace/MyScript", {});
     REQUIRE(requiredScripts.size() == 1);
     CHECK(requiredScripts[0] == "game/workspace/MyModuleScript");
@@ -1548,6 +1551,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "check_module_references_allocator")
 
     ModulePtr module = getFrontend().moduleResolver.getModule("game/workspace/MyScript");
     SourceModule* source = getFrontend().getSourceModule("game/workspace/MyScript");
+
     CHECK(module);
     CHECK(source);
 
@@ -1565,6 +1569,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "check_module_references_correct_ast_root")
 
     ModulePtr module = getFrontend().moduleResolver.getModule("game/workspace/MyScript");
     SourceModule* source = getFrontend().getSourceModule("game/workspace/MyScript");
+
     CHECK(module);
     CHECK(source);
 
@@ -1574,6 +1579,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "check_module_references_correct_ast_root")
 TEST_CASE_FIXTURE(FrontendFixture, "dfg_data_cleared_on_retain_type_graphs_unset")
 {
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+
     fileResolver.source["game/A"] = R"(
 local a = 1
 local b = 2
@@ -1601,14 +1607,17 @@ return {x = a, y = b, z = c}
 TEST_CASE_FIXTURE(FrontendFixture, "test_traverse_dependents")
 {
     fileResolver.source["game/Gui/Modules/A"] = "return {hello=5, world=true}";
+
     fileResolver.source["game/Gui/Modules/B"] = R"(
         return require(game:GetService('Gui').Modules.A)
     )";
+
     fileResolver.source["game/Gui/Modules/C"] = R"(
         local Modules = game:GetService('Gui').Modules
         local B = require(Modules.B)
         return {c_value = B.hello}
     )";
+
     fileResolver.source["game/Gui/Modules/D"] = R"(
         local Modules = game:GetService('Gui').Modules
         local C = require(Modules.C)
@@ -1618,6 +1627,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_traverse_dependents")
     getFrontend().check("game/Gui/Modules/D");
 
     std::vector<ModuleName> visited;
+
     getFrontend().traverseDependents(
         "game/Gui/Modules/B",
         [&visited](SourceNode& node)
@@ -1627,15 +1637,20 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_traverse_dependents")
         }
     );
 
-    CHECK_EQ(std::vector<ModuleName>{"game/Gui/Modules/B", "game/Gui/Modules/C", "game/Gui/Modules/D"}, visited);
+    CHECK_EQ(
+        std::vector<ModuleName>{"game/Gui/Modules/B", "game/Gui/Modules/C", "game/Gui/Modules/D"},
+        visited
+    );
 }
 
 TEST_CASE_FIXTURE(FrontendFixture, "test_traverse_dependents_early_exit")
 {
     fileResolver.source["game/Gui/Modules/A"] = "return {hello=5, world=true}";
+
     fileResolver.source["game/Gui/Modules/B"] = R"(
         return require(game:GetService('Gui').Modules.A)
     )";
+
     fileResolver.source["game/Gui/Modules/C"] = R"(
         local Modules = game:GetService('Gui').Modules
         local B = require(Modules.B)
@@ -1645,6 +1660,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_traverse_dependents_early_exit")
     getFrontend().check("game/Gui/Modules/C");
 
     std::vector<ModuleName> visited;
+
     getFrontend().traverseDependents(
         "game/Gui/Modules/A",
         [&visited](SourceNode& node)
@@ -1654,7 +1670,10 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_traverse_dependents_early_exit")
         }
     );
 
-    CHECK_EQ(std::vector<ModuleName>{"game/Gui/Modules/A", "game/Gui/Modules/B"}, visited);
+    CHECK_EQ(
+        std::vector<ModuleName>{"game/Gui/Modules/A", "game/Gui/Modules/B"},
+        visited
+    );
 }
 
 TEST_CASE_FIXTURE(FrontendFixture, "test_dependents_stored_on_node_as_graph_updates")
@@ -1668,6 +1687,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_dependents_stored_on_node_as_graph_upda
     auto validateMatchesRequireLists = [&](const std::string& message)
     {
         DenseHashMap<ModuleName, std::vector<ModuleName>> dependents{{}};
+
         for (const auto& module : getFrontend().sourceNodes)
         {
             for (const auto& dep : module.second->requireSet)
@@ -1677,33 +1697,44 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_dependents_stored_on_node_as_graph_upda
         for (const auto& module : getFrontend().sourceNodes)
         {
             Set<ModuleName>& dependentsForModule = module.second->dependents;
+
             for (const auto& dep : dependents[module.first])
-                CHECK_MESSAGE(1 == dependentsForModule.count(dep), "Mismatch in dependents for " << module.first << ": " << message);
+            {
+                CHECK_MESSAGE(
+                    1 == dependentsForModule.count(dep),
+                    "Mismatch in dependents for " << module.first << ": " << message
+                );
+            }
         }
     };
 
     auto validateSecondDependsOnFirst = [&](const std::string& from, const std::string& to, bool expected)
     {
         SourceNode& fromNode = *getFrontend().sourceNodes[from];
+
         CHECK_MESSAGE(
             fromNode.dependents.count(to) == int(expected),
-            "Expected " << from << " to " << (expected ? std::string() : std::string("not ")) << "have a reverse dependency on " << to
+            "Expected " << from << " to "
+                        << (expected ? std::string() : std::string("not "))
+                        << "have a reverse dependency on " << to
         );
     };
 
     // C -> B -> A
     {
         updateSource("game/Gui/Modules/A", "return {hello=5, world=true}");
+
         updateSource("game/Gui/Modules/B", R"(
             return require(game:GetService('Gui').Modules.A)
         )");
+
         updateSource("game/Gui/Modules/C", R"(
             local Modules = game:GetService('Gui').Modules
             local B = require(Modules.B)
             return {c_value = B}
         )");
-        getFrontend().check("game/Gui/Modules/C");
 
+        getFrontend().check("game/Gui/Modules/C");
         validateMatchesRequireLists("Initial check");
 
         validateSecondDependsOnFirst("game/Gui/Modules/A", "game/Gui/Modules/B", true);
@@ -1716,6 +1747,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_dependents_stored_on_node_as_graph_upda
         updateSource("game/Gui/Modules/B", R"(
             return 1
         )");
+
         getFrontend().check("game/Gui/Modules/C");
 
         validateMatchesRequireLists("Removing dependency B->A");
@@ -1727,6 +1759,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_dependents_stored_on_node_as_graph_upda
         updateSource("game/Gui/Modules/B", R"(
             return require(game:GetService('Gui').Modules.A)
         )");
+
         getFrontend().check("game/Gui/Modules/C");
 
         validateMatchesRequireLists("Adding back B->A");
@@ -1741,9 +1774,11 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_dependents_stored_on_node_as_graph_upda
             local A = require(game:GetService('Gui').Modules.A)
             return {d_value = C.c_value}
         )");
+
         getFrontend().check("game/Gui/Modules/D");
 
         validateMatchesRequireLists("Adding D->C, D->B, D->A");
+
         validateSecondDependsOnFirst("game/Gui/Modules/A", "game/Gui/Modules/D", true);
         validateSecondDependsOnFirst("game/Gui/Modules/B", "game/Gui/Modules/D", true);
         validateSecondDependsOnFirst("game/Gui/Modules/C", "game/Gui/Modules/D", true);
@@ -1753,9 +1788,11 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_dependents_stored_on_node_as_graph_upda
     {
         updateSource("game/Gui/Modules/D", "return require(game:GetService('Gui').Modules.C)");
         updateSource("game/Gui/Modules/C", "return require(game:GetService('Gui').Modules.D)");
+
         getFrontend().check("game/Gui/Modules/D");
 
         validateMatchesRequireLists("Adding cycle D->C, C->D");
+
         validateSecondDependsOnFirst("game/Gui/Modules/C", "game/Gui/Modules/D", true);
         validateSecondDependsOnFirst("game/Gui/Modules/D", "game/Gui/Modules/C", true);
     }
@@ -1763,9 +1800,11 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_dependents_stored_on_node_as_graph_upda
     // B -> A, C -> D, D -> error
     {
         updateSource("game/Gui/Modules/D", "return require(game:GetService('Gui').Modules.C.)");
+
         getFrontend().check("game/Gui/Modules/D");
 
         validateMatchesRequireLists("Adding error dependency D->C.");
+
         validateSecondDependsOnFirst("game/Gui/Modules/D", "game/Gui/Modules/C", true);
         validateSecondDependsOnFirst("game/Gui/Modules/C", "game/Gui/Modules/D", false);
     }
@@ -1783,14 +1822,17 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_invalid_dependency_tracking_per_module_
     opts.forAutocomplete = false;
 
     getFrontend().check("game/Gui/Modules/B", opts);
+
     CHECK(getFrontend().allModuleDependenciesValid("game/Gui/Modules/B", opts.forAutocomplete));
     CHECK(!getFrontend().allModuleDependenciesValid("game/Gui/Modules/B", !opts.forAutocomplete));
 
     opts.forAutocomplete = true;
+
     getFrontend().check("game/Gui/Modules/A", opts);
 
     CHECK(!getFrontend().allModuleDependenciesValid("game/Gui/Modules/B", opts.forAutocomplete));
     CHECK(getFrontend().allModuleDependenciesValid("game/Gui/Modules/B", !opts.forAutocomplete));
+
     CHECK(getFrontend().allModuleDependenciesValid("game/Gui/Modules/A", !opts.forAutocomplete));
     CHECK(getFrontend().allModuleDependenciesValid("game/Gui/Modules/A", opts.forAutocomplete));
 }
@@ -1801,6 +1843,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "queue_check_simple")
         --!strict
         return {hello=5, world=true}
     )";
+
     fileResolver.source["game/Gui/Modules/B"] = R"(
         --!strict
         local Modules = game:GetService('Gui').Modules
@@ -1824,6 +1867,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "queue_check_cycle_instant")
         local B = require(Modules.B)
         return {a_value = B.hello}
     )";
+
     fileResolver.source["game/Gui/Modules/B"] = R"(
         --!strict
         local Modules = game:GetService('Gui').Modules
@@ -1837,8 +1881,26 @@ TEST_CASE_FIXTURE(FrontendFixture, "queue_check_cycle_instant")
     auto result = getFrontend().getCheckResult("game/Gui/Modules/B", true);
     REQUIRE(result);
     LUAU_REQUIRE_ERROR_COUNT(2, *result);
-    CHECK(toString(result->errors[0]) == "Cyclic module dependency: game/Gui/Modules/B -> game/Gui/Modules/A");
-    CHECK(toString(result->errors[1]) == "Cyclic module dependency: game/Gui/Modules/A -> game/Gui/Modules/B");
+
+    if (FFlag::LuauCyclicRequireTypeInference)
+    {
+        CHECK(
+            toString(result->errors[0]) ==
+            "Cyclic dependencies are only supported if all modules in the cycle use 'export' syntax. The following modules do not use 'export': "
+            "game/Gui/Modules/B, game/Gui/Modules/A"
+        );
+
+        CHECK(
+            toString(result->errors[1]) ==
+            "Cyclic dependencies are only supported if all modules in the cycle use 'export' syntax. The following modules do not use 'export': "
+            "game/Gui/Modules/A, game/Gui/Modules/B"
+        );
+    }
+    else
+    {
+        CHECK(toString(result->errors[0]) == "Cyclic module dependency: game/Gui/Modules/B -> game/Gui/Modules/A");
+        CHECK(toString(result->errors[1]) == "Cyclic module dependency: game/Gui/Modules/A -> game/Gui/Modules/B");
+    }
 }
 
 TEST_CASE_FIXTURE(FrontendFixture, "queue_check_cycle_delayed")
@@ -1847,6 +1909,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "queue_check_cycle_delayed")
         --!strict
         return {c_value = 5}
     )";
+
     fileResolver.source["game/Gui/Modules/A"] = R"(
         --!strict
         local Modules = game:GetService('Gui').Modules
@@ -1854,6 +1917,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "queue_check_cycle_delayed")
         local B = require(Modules.B)
         return {a_value = B.hello + C.c_value}
     )";
+
     fileResolver.source["game/Gui/Modules/B"] = R"(
         --!strict
         local Modules = game:GetService('Gui').Modules
@@ -1868,8 +1932,26 @@ TEST_CASE_FIXTURE(FrontendFixture, "queue_check_cycle_delayed")
     auto result = getFrontend().getCheckResult("game/Gui/Modules/B", true);
     REQUIRE(result);
     LUAU_REQUIRE_ERROR_COUNT(2, *result);
-    CHECK(toString(result->errors[0]) == "Cyclic module dependency: game/Gui/Modules/B -> game/Gui/Modules/A");
-    CHECK(toString(result->errors[1]) == "Cyclic module dependency: game/Gui/Modules/A -> game/Gui/Modules/B");
+
+    if (FFlag::LuauCyclicRequireTypeInference)
+    {
+        CHECK(
+            toString(result->errors[0]) ==
+            "Cyclic dependencies are only supported if all modules in the cycle use 'export' syntax. The following modules do not use 'export': "
+            "game/Gui/Modules/B, game/Gui/Modules/A"
+        );
+
+        CHECK(
+            toString(result->errors[1]) ==
+            "Cyclic dependencies are only supported if all modules in the cycle use 'export' syntax. The following modules do not use 'export': "
+            "game/Gui/Modules/A, game/Gui/Modules/B"
+        );
+    }
+    else
+    {
+        CHECK(toString(result->errors[0]) == "Cyclic module dependency: game/Gui/Modules/B -> game/Gui/Modules/A");
+        CHECK(toString(result->errors[1]) == "Cyclic module dependency: game/Gui/Modules/A -> game/Gui/Modules/B");
+    }
 }
 
 TEST_CASE_FIXTURE(FrontendFixture, "queue_check_propagates_ice")
@@ -1877,10 +1959,12 @@ TEST_CASE_FIXTURE(FrontendFixture, "queue_check_propagates_ice")
     ScopedFastFlag sffs{FFlag::DebugLuauMagicTypes, true};
 
     ModuleName mm = fromString("MainModule");
+
     fileResolver.source[mm] = R"(
         --!strict
         local a: _luau_ice = 55
     )";
+
     getFrontend().markDirty(mm);
     getFrontend().queueModuleCheck("MainModule");
 
@@ -1899,7 +1983,14 @@ TEST_CASE_FIXTURE(FrontendFixture, "parse_just_a_type")
     InternalErrorReporter iceHandler;
     TypeCheckLimits limits;
 
-    TypeId ty = getFrontend().parseType(NotNull{&allocator}, NotNull{&names}, NotNull{&iceHandler}, limits, NotNull{&arena}, src);
+    TypeId ty = getFrontend().parseType(
+        NotNull{&allocator},
+        NotNull{&names},
+        NotNull{&iceHandler},
+        limits,
+        NotNull{&arena},
+        src
+    );
 
     CHECK("(number, string) -> boolean?" == toString(ty));
 }
@@ -1923,7 +2014,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "generic_P_widening_with_cross_module_recursi
     DOES_NOT_PASS_OLD_SOLVER_GUARD();
 
     ScopedFastFlag sffs[] = {
-        {FFlag::LuauDontBindOptionalGenericToNil, true},
         {FFlag::LuauSubtypingMissingPropertiesAsNil, true},
         {FFlag::LuauBidirectionalInferenceSimplifyTables, true},
     };
@@ -1931,14 +2021,51 @@ TEST_CASE_FIXTURE(FrontendFixture, "generic_P_widening_with_cross_module_recursi
     // Module A: exports a recursive type and a component that uses it.
     fileResolver.source["game/Gui/Modules/A"] = R"(
         --!strict
-        type Element = { key: (number | string)?, props: any?, ref: any, type: any }
-        type NodeArray = { (NodeArray | boolean | number | string | Element | { [string]: (NodeArray | boolean | number | string | Element)?, UNIQUE_TAG: any? })? }
-        export type Node = string | number | boolean | Element | NodeArray | { [string]: (NodeArray | boolean | number | string | Element)?, UNIQUE_TAG: any? }
-        export type BaseProps = { tag: string?, children: Node? }
-        export type ExtraProps = { size: number? }
+        type Element = {
+            key: (number | string)?,
+            props: any?,
+            ref: any,
+            type: any
+        }
+
+        type NodeArray = {
+            (
+                NodeArray
+                | boolean
+                | number
+                | string
+                | Element
+                | {
+                    [string]: (NodeArray | boolean | number | string | Element)?,
+                    UNIQUE_TAG: any?
+                }
+            )?
+        }
+
+        export type Node =
+            string
+            | number
+            | boolean
+            | Element
+            | NodeArray
+            | {
+                [string]: (NodeArray | boolean | number | string | Element)?,
+                UNIQUE_TAG: any?
+            }
+
+        export type BaseProps = {
+            tag: string?,
+            children: Node?
+        }
+
+        export type ExtraProps = {
+            size: number?
+        }
+
         local function View(props: BaseProps & ExtraProps)
             return nil
         end
+
         return View
     )";
 
@@ -1947,14 +2074,14 @@ TEST_CASE_FIXTURE(FrontendFixture, "generic_P_widening_with_cross_module_recursi
         --!strict
         local Modules = game:GetService('Gui').Modules
         local View = require(Modules.A)
+
         local function createElement<P>(component: (P) -> any, props: P?): any
             return nil
         end
+
         local _x = createElement(View, { tag = "hello" })
     )";
 
     CheckResult result = getFrontend().check("game/Gui/Modules/B");
     LUAU_REQUIRE_NO_ERRORS(result);
 }
-
-TEST_SUITE_END();
